@@ -1,0 +1,55 @@
+:root {
+  --base-font-size: 16px;
+  --small-font-size: 0.8125rem;
+  --base-space: 1rem;
+  --bold-weight: 400;
+  --normal-weight: 500;
+  --ff-blue-300: #3498db;
+  --ff-blue-500: #40576d;
+  --ff-blue-700: #1e374f;
+}
+
+%body-copy {
+  font-family: HelveticaNeue, Helvetica, proxima-nova, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: var(--base-font-size);
+  font-style: normal;
+  font-weight: var(--normal-weight);
+  line-height: 1.5;
+  color: black;
+}
+%code-copy {
+  font-family: SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: var(--small-font-size);
+}
+
+html {
+  height: -webkit-fill-available;
+  background-color: whitesmoke;
+
+  @extend %body-copy;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: -webkit-fill-available;
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+  padding-top: 0.5em;
+  margin: 0;
+  font-weight: var(--bold-weight);
+  line-height: 1;
+}
+
+#app {
+  display: flex;
+  flex-grow: 1;
+}

@@ -1,0 +1,17 @@
+{
+  "extends": ["./tsconfig.json"],
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Node 22",
+  "_version": "22.0.0",
+  "compilerOptions": {
+    "composite": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["es2024"],
+    "module": "node16",
+    "moduleResolution": "node16",
+    "emitDeclarationOnly": true,
+    "target": "es2024",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo"
+  },
+  "include": ["vite.config.ts"]
+}

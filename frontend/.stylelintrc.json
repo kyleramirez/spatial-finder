@@ -1,0 +1,24 @@
+{
+  "plugins": ["stylelint-no-unsupported-browser-features"],
+  "extends": [
+    "stylelint-config-standard-scss",
+    "stylelint-config-html/html",
+    "stylelint-config-html/svelte",
+    "stylelint-config-recess-order"
+  ],
+  "rules": {
+    "plugin/no-unsupported-browser-features": [
+      true,
+      {
+        "severity": "warning"
+      }
+    ],
+    "selector-pseudo-class-no-unknown": [
+      true,
+      {
+        "ignorePseudoClasses": ["global", "local"]
+      }
+    ],
+    "selector-class-pattern": null
+  }
+}
