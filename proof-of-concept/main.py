@@ -1,1 +1,864 @@
-# main application
+#!/usr/bin/env python3
+"""
+Audible Tools - Audio Processing and Transcription Tool
+Command line interface for audio file processing, transcription, and search.
+"""
+
+import os
+import sys
+import json
+import hashlib
+import subprocess
+import tempfile
+import shutil
+import warnings
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple, Any
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import click
+import duckdb
+import numpy as np
+import torch
+import librosa
+import soundfile as sf
+import ffmpeg
+from pydub import AudioSegment
+from mutagen import File as MutagenFile
+from tqdm import tqdm
+from tabulate import tabulate
+import faiss
+from sentence_transformers import SentenceTransformer
+import whisper
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
+warnings.filterwarnings("ignore", category=UserWarning, module="whisper")
+
+# Configuration
+DB_PATH = "audible_tools.db"
+CACHE_DIR = "cache"
+SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.wma', '.aiff', '.au'}
+SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm'}
+CHUNK_SIZE = 5.0  # seconds for audio embeddings
+OVERLAP_SIZE = 2.5  # seconds overlap for audio embeddings
+
+def get_device():
+    """Get the best available device (GPU or CPU)."""
+    # Try CUDA first (NVIDIA GPUs)
+    if torch.cuda.is_available():
+        try:
+            # Test CUDA with a simple operation
+            test_tensor = torch.tensor([1.0], device="cuda")
+            device = "cuda"
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"Using CUDA GPU: {gpu_name}")
+            return device
+        except Exception as e:
+            print(f"CUDA available but not working ({e}), trying MPS...")
+    
+    # Try MPS (Apple Silicon)
+    if torch.backends.mps.is_available():
+        try:
+            # Test MPS with a simple operation
+            test_tensor = torch.tensor([1.0], device="mps")
+            # Test a more complex operation that might fail
+            result = test_tensor * 2
+            device = "mps"
+            print("Using Apple Metal Performance Shaders (MPS)")
+            return device
+        except Exception as e:
+            print(f"MPS available but not working ({e}), falling back to CPU")
+    
+    # Fallback to CPU
+    device = "cpu"
+    print("Using CPU")
+    return device
+
+class AudioDatabase:
+    """Database management for audio files and processing results."""
+    
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self.conn = duckdb.connect(db_path)
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize database schema."""
+        # Create sequences for auto-incrementing primary keys
+        sequences = [
+            "CREATE SEQUENCE IF NOT EXISTS voices_id_seq",
+            "CREATE SEQUENCE IF NOT EXISTS verbalizations_id_seq",
+            "CREATE SEQUENCE IF NOT EXISTS nonverbal_labels_id_seq",
+            "CREATE SEQUENCE IF NOT EXISTS silents_id_seq",
+            "CREATE SEQUENCE IF NOT EXISTS audible_embeddings_id_seq",
+            "CREATE SEQUENCE IF NOT EXISTS exports_id_seq",
+            "CREATE SEQUENCE IF NOT EXISTS audible_faiss_indexes_id_seq"
+        ]
+        
+        for seq_sql in sequences:
+            self.conn.execute(seq_sql)
+        
+        # Create all tables according to the schema
+        tables = [
+            """
+            CREATE TABLE IF NOT EXISTS audible_files (
+                uuid TEXT PRIMARY KEY,
+                strategy TEXT DEFAULT 'local_disk',
+                path TEXT NOT NULL,
+                basename TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                mime TEXT,
+                sample_rate INTEGER,
+                bitrate INTEGER,
+                bit_depth TEXT,
+                channels TEXT,
+                codec TEXT,
+                has_video BOOLEAN DEFAULT false,
+                video_codec TEXT,
+                video_resolution TEXT,
+                frame_rate REAL,
+                container_format TEXT,
+                creation_date TIMESTAMP,
+                generalized_location TEXT,
+                latitude REAL,
+                longitude REAL,
+                duration REAL,
+                ingest_status TEXT DEFAULT 'QUEUED',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS voices (
+                id INTEGER PRIMARY KEY DEFAULT nextval('voices_id_seq'),
+                display_name TEXT DEFAULT 'Unknown',
+                best_verbalization_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS verbalizations (
+                id INTEGER PRIMARY KEY DEFAULT nextval('verbalizations_id_seq'),
+                voice_id INTEGER NOT NULL,
+                audible_file_uuid TEXT NOT NULL,
+                start_byte INTEGER,
+                end_byte INTEGER,
+                start_time REAL,
+                duration REAL,
+                label TEXT,
+                label_confidence REAL,
+                label_embedding BLOB,
+                label_model TEXT,
+                voice_confidence REAL,
+                voice_embedding BLOB,
+                voice_model TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (voice_id) REFERENCES voices(id),
+                FOREIGN KEY (audible_file_uuid) REFERENCES audible_files(uuid)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS nonverbal_labels (
+                id INTEGER PRIMARY KEY DEFAULT nextval('nonverbal_labels_id_seq'),
+                audible_file_uuid TEXT,
+                start_byte INTEGER,
+                end_byte INTEGER,
+                start_time REAL,
+                duration REAL,
+                label TEXT,
+                source TEXT,
+                kind TEXT,
+                confidence REAL,
+                embedding BLOB,
+                embedding_model TEXT,
+                include_in_export BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (audible_file_uuid) REFERENCES audible_files(uuid)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS silents (
+                id INTEGER PRIMARY KEY DEFAULT nextval('silents_id_seq'),
+                audible_file_uuid TEXT,
+                start_byte INTEGER,
+                end_byte INTEGER,
+                start_time REAL,
+                duration REAL,
+                confidence REAL,
+                detector TEXT,
+                detector_version TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (audible_file_uuid) REFERENCES audible_files(uuid)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS audible_embeddings (
+                id INTEGER PRIMARY KEY DEFAULT nextval('audible_embeddings_id_seq'),
+                audible_file_uuid TEXT,
+                start_byte INTEGER,
+                end_byte INTEGER,
+                start_time REAL,
+                duration REAL,
+                embedding BLOB,
+                embedding_model TEXT,
+                segment_index INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (audible_file_uuid) REFERENCES audible_files(uuid)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS exports (
+                id INTEGER PRIMARY KEY DEFAULT nextval('exports_id_seq'),
+                status TEXT DEFAULT 'QUEUED',
+                strategy TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS export_voices (
+                voice_id INTEGER,
+                display_name TEXT,
+                export_id INTEGER,
+                PRIMARY KEY (voice_id, export_id),
+                FOREIGN KEY (voice_id) REFERENCES voices(id),
+                FOREIGN KEY (export_id) REFERENCES exports(id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS audible_faiss_indexes (
+                id INTEGER PRIMARY KEY DEFAULT nextval('audible_faiss_indexes_id_seq'),
+                type TEXT,
+                strategy TEXT,
+                index_path TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ]
+        
+        for table_sql in tables:
+            self.conn.execute(table_sql)
+    
+    def get_file_uuid(self, file_path: str) -> str:
+        """Generate deterministic UUID for a file."""
+        file_path = str(Path(file_path).resolve())
+        stat = os.stat(file_path)
+        content = f"{file_path}:{stat.st_size}:{stat.st_mtime}"
+        return hashlib.sha256(content.encode()).hexdigest()
+    
+    def get_or_create_default_voice(self) -> int:
+        """Get or create the default voice for single-speaker files."""
+        existing = self.conn.execute(
+            "SELECT id FROM voices WHERE display_name = 'Default Speaker'"
+        ).fetchone()
+        
+        if existing:
+            return existing[0]
+        else:
+            voice_id = self.conn.execute(
+                "INSERT INTO voices (display_name) VALUES ('Default Speaker') RETURNING id"
+            ).fetchone()[0]
+            return voice_id
+    
+    def close(self):
+        """Close database connection."""
+        self.conn.close()
+
+class AudioProcessor:
+    """Audio processing functionality."""
+    
+    def __init__(self, db: AudioDatabase):
+        self.db = db
+        self.whisper_model = None
+        self.sentence_transformer = None
+        self.device = get_device()
+        self.cache_dir = Path(CACHE_DIR)
+        self.cache_dir.mkdir(exist_ok=True)
+    
+    def load_models(self):
+        """Load ML models on demand."""
+        if self.whisper_model is None:
+            print("Loading Whisper model...")
+            # Suppress FP16 warnings when loading Whisper model
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
+                warnings.filterwarnings("ignore", category=UserWarning, module="whisper")
+                self.whisper_model = whisper.load_model("base", device=self.device)
+        
+        if self.sentence_transformer is None:
+            print("Loading sentence transformer...")
+            # Try MPS first if available, but fall back to CPU if it fails
+            sentence_device = self.device
+            try:
+                self.sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2', device=sentence_device)
+            except Exception as e:
+                if sentence_device == "mps":
+                    print(f"MPS failed for sentence transformer ({str(e)[:100]}...), using CPU")
+                    sentence_device = "cpu"
+                    self.sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2', device=sentence_device)
+                else:
+                    raise e
+    
+    def get_audio_metadata(self, file_path: str) -> Dict[str, Any]:
+        """Extract audio metadata using ffprobe."""
+        try:
+            probe = ffmpeg.probe(file_path)
+            format_info = probe['format']
+            
+            audio_stream = None
+            video_stream = None
+            
+            for stream in probe['streams']:
+                if stream['codec_type'] == 'audio' and audio_stream is None:
+                    audio_stream = stream
+                elif stream['codec_type'] == 'video' and video_stream is None:
+                    video_stream = stream
+            
+            metadata = {
+                'mime': format_info.get('format_name', ''),
+                'duration': float(format_info.get('duration', 0)),
+                'bitrate': int(format_info.get('bit_rate', 0)),
+                'container_format': format_info.get('format_name', ''),
+                'has_video': video_stream is not None,
+            }
+            
+            if audio_stream:
+                metadata.update({
+                    'sample_rate': int(audio_stream.get('sample_rate', 0)),
+                    'channels': str(audio_stream.get('channels', 0)),
+                    'codec': audio_stream.get('codec_name', ''),
+                    'bit_depth': audio_stream.get('bits_per_raw_sample', ''),
+                })
+            
+            if video_stream:
+                metadata.update({
+                    'video_codec': video_stream.get('codec_name', ''),
+                    'video_resolution': f"{video_stream.get('width', 0)}x{video_stream.get('height', 0)}",
+                    'frame_rate': eval(video_stream.get('r_frame_rate', '0/1')),
+                })
+            
+            return metadata
+            
+        except Exception as e:
+            print(f"Error getting metadata for {file_path}: {e}")
+            return {}
+    
+    def convert_audio_to_wav(self, input_path: str, output_path: str) -> bool:
+        """Convert audio file to WAV format."""
+        try:
+            # Use ffmpeg for conversion
+            (
+                ffmpeg
+                .input(input_path)
+                .output(output_path, acodec='pcm_s16le', ac=1, ar=16000)
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            return True
+        except Exception as e:
+            print(f"Error converting {input_path} to WAV: {e}")
+            return False
+    
+    def process_audio_file(self, file_path: str, file_uuid: str) -> bool:
+        """Process a single audio file with Whisper (no speaker diarization for now)."""
+        try:
+            self.load_models()
+            
+            # Convert to WAV if needed
+            wav_path = self.cache_dir / f"{file_uuid}.wav"
+            if not self.convert_audio_to_wav(file_path, str(wav_path)):
+                return False
+            
+            # Transcribe with Whisper
+            print(f"Transcribing {Path(file_path).name}...")
+            # Suppress FP16 warnings during transcription
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
+                warnings.filterwarnings("ignore", category=UserWarning, module="whisper")
+                result = self.whisper_model.transcribe(str(wav_path))
+            
+            # Process segments (without speaker diarization)
+            success = self.process_segments(file_uuid, result)
+            
+            if success:
+                # Update status
+                self.db.conn.execute(
+                    "UPDATE audible_files SET ingest_status = 'COMPLETE', updated_at = CURRENT_TIMESTAMP WHERE uuid = ?",
+                    (file_uuid,)
+                )
+            else:
+                # Update status to failed
+                self.db.conn.execute(
+                    "UPDATE audible_files SET ingest_status = 'FAILED', updated_at = CURRENT_TIMESTAMP WHERE uuid = ?",
+                    (file_uuid,)
+                )
+            
+            # Clean up temp file
+            if wav_path.exists():
+                wav_path.unlink()
+            
+            return success
+            
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+            self.db.conn.execute(
+                "UPDATE audible_files SET ingest_status = 'FAILED', updated_at = CURRENT_TIMESTAMP WHERE uuid = ?",
+                (file_uuid,)
+            )
+            return False
+    
+    def process_segments(self, file_uuid: str, whisper_result: Dict) -> bool:
+        """Process Whisper segments (without speaker diarization)."""
+        try:
+            # Get or create default voice for all segments
+            voice_id = self.db.get_or_create_default_voice()
+            
+            # Process each segment
+            for segment in whisper_result['segments']:
+                start_time = segment['start']
+                end_time = segment['end']
+                text = segment['text'].strip()
+                
+                # Skip empty segments
+                if not text:
+                    continue
+                
+                confidence = segment.get('avg_logprob', 0.0)
+                
+                # Generate text embedding
+                text_embedding = self.sentence_transformer.encode(text)
+                text_embedding_bytes = text_embedding.astype(np.float32).tobytes()
+                
+                # Insert verbalization
+                self.db.conn.execute(
+                    """
+                    INSERT INTO verbalizations 
+                    (voice_id, audible_file_uuid, start_time, duration, label, label_confidence, 
+                     label_embedding, label_model, voice_confidence, voice_model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        voice_id, file_uuid, start_time, end_time - start_time,
+                        text, confidence, text_embedding_bytes, "all-MiniLM-L6-v2",
+                        1.0, "whisper-only"
+                    )
+                )
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error processing segments: {e}")
+            return False
+
+class AudioToolsCLI:
+    """Command line interface for audio tools."""
+    
+    def __init__(self):
+        self.db = AudioDatabase()
+        self.processor = AudioProcessor(self.db)
+    
+    def add_files(self, paths: List[str], recursive: bool = False):
+        """Add audio files to the database."""
+        files_to_process = []
+        
+        for path_str in paths:
+            path = Path(path_str)
+            if path.is_file():
+                if path.suffix.lower() in SUPPORTED_AUDIO_FORMATS or path.suffix.lower() in SUPPORTED_VIDEO_FORMATS:
+                    files_to_process.append(path)
+            elif path.is_dir() and recursive:
+                for ext in SUPPORTED_AUDIO_FORMATS | SUPPORTED_VIDEO_FORMATS:
+                    files_to_process.extend(path.rglob(f"*{ext}"))
+        
+        if not files_to_process:
+            print("No audio files found to process.")
+            return
+        
+        print(f"Found {len(files_to_process)} files to process.")
+        
+        # Process files
+        for file_path in tqdm(files_to_process, desc="Adding files"):
+            file_uuid = self.db.get_file_uuid(str(file_path))
+            
+            # Check if already exists
+            existing = self.db.conn.execute(
+                "SELECT uuid FROM audible_files WHERE uuid = ?", (file_uuid,)
+            ).fetchone()
+            
+            if existing:
+                print(f"Skipping {file_path.name} (already exists)")
+                continue
+            
+            # Get metadata
+            metadata = self.processor.get_audio_metadata(str(file_path))
+            
+            # Insert file record
+            self.db.conn.execute(
+                """
+                INSERT INTO audible_files 
+                (uuid, path, basename, extension, mime, sample_rate, bitrate, bit_depth, 
+                 channels, codec, has_video, video_codec, video_resolution, frame_rate, 
+                 container_format, duration, ingest_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED')
+                """,
+                (
+                    file_uuid, str(file_path), file_path.name, file_path.suffix,
+                    metadata.get('mime'), metadata.get('sample_rate'), metadata.get('bitrate'),
+                    metadata.get('bit_depth'), metadata.get('channels'), metadata.get('codec'),
+                    metadata.get('has_video', False), metadata.get('video_codec'),
+                    metadata.get('video_resolution'), metadata.get('frame_rate'),
+                    metadata.get('container_format'), metadata.get('duration')
+                )
+            )
+        
+        # Process queued files
+        self.process_queued_files()
+    
+    def process_queued_files(self):
+        """Process all queued files."""
+        queued_files = self.db.conn.execute(
+            "SELECT uuid, path FROM audible_files WHERE ingest_status = 'QUEUED'"
+        ).fetchall()
+        
+        if not queued_files:
+            print("No files to process.")
+            return
+        
+        print(f"Processing {len(queued_files)} queued files...")
+        
+        for file_uuid, file_path in tqdm(queued_files, desc="Processing"):
+            # Update status to working
+            self.db.conn.execute(
+                "UPDATE audible_files SET ingest_status = 'WORKING', updated_at = CURRENT_TIMESTAMP WHERE uuid = ?",
+                (file_uuid,)
+            )
+            
+            # Process the file
+            self.processor.process_audio_file(file_path, file_uuid)
+    
+    def show_status(self):
+        """Show processing status."""
+        stats = self.db.conn.execute(
+            """
+            SELECT 
+                ingest_status,
+                COUNT(*) as count,
+                COALESCE(SUM(duration), 0) as total_duration
+            FROM audible_files 
+            GROUP BY ingest_status
+            """
+        ).fetchall()
+        
+        print("\nProcessing Status:")
+        headers = ["Status", "Count", "Total Duration (min)"]
+        rows = [(status, count, round(duration/60, 2)) for status, count, duration in stats]
+        print(tabulate(rows, headers=headers, tablefmt="grid"))
+        
+        # Voice stats
+        voice_count = self.db.conn.execute("SELECT COUNT(*) FROM voices").fetchone()[0]
+        verbalization_count = self.db.conn.execute("SELECT COUNT(*) FROM verbalizations").fetchone()[0]
+        
+        print(f"\nVoices identified: {voice_count}")
+        print(f"Verbalizations processed: {verbalization_count}")
+    
+    def list_files(self, path: str = None):
+        """List files with their processing status."""
+        if path:
+            query = """
+            SELECT basename, ingest_status, duration, 
+                   (SELECT COUNT(*) FROM verbalizations WHERE audible_file_uuid = af.uuid) as transcripts,
+                   (SELECT COUNT(DISTINCT voice_id) FROM verbalizations WHERE audible_file_uuid = af.uuid) as voices
+            FROM audible_files af
+            WHERE path LIKE ?
+            ORDER BY basename
+            """
+            results = self.db.conn.execute(query, (f"%{path}%",)).fetchall()
+        else:
+            query = """
+            SELECT basename, ingest_status, duration,
+                   (SELECT COUNT(*) FROM verbalizations WHERE audible_file_uuid = af.uuid) as transcripts,
+                   (SELECT COUNT(DISTINCT voice_id) FROM verbalizations WHERE audible_file_uuid = af.uuid) as voices
+            FROM audible_files af
+            ORDER BY basename
+            """
+            results = self.db.conn.execute(query).fetchall()
+        
+        headers = ["File", "Status", "Duration (min)", "Transcripts", "Voices"]
+        rows = [(name, status, round(duration/60, 2) if duration else 0, transcripts, voices) 
+                for name, status, duration, transcripts, voices in results]
+        
+        print(tabulate(rows, headers=headers, tablefmt="grid"))
+    
+    def list_voices(self):
+        """List all identified voices."""
+        voices = self.db.conn.execute(
+            """
+            SELECT v.id, v.display_name, COUNT(vb.id) as verbalizations
+            FROM voices v
+            LEFT JOIN verbalizations vb ON v.id = vb.voice_id
+            GROUP BY v.id, v.display_name
+            ORDER BY verbalizations DESC
+            """
+        ).fetchall()
+        
+        headers = ["ID", "Name", "Verbalizations"]
+        print(tabulate(voices, headers=headers, tablefmt="grid"))
+    
+    def rename_voice(self, voice_id: int, new_name: str):
+        """Rename a voice."""
+        self.db.conn.execute(
+            "UPDATE voices SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_name, voice_id)
+        )
+        print(f"Voice {voice_id} renamed to '{new_name}'")
+    
+    def search_text(self, query: str, limit: int = 10):
+        """Search for text in verbalizations."""
+        results = self.db.conn.execute(
+            """
+            SELECT v.display_name, vb.label, vb.start_time, af.basename
+            FROM verbalizations vb
+            JOIN voices v ON vb.voice_id = v.id
+            JOIN audible_files af ON vb.audible_file_uuid = af.uuid
+            WHERE vb.label LIKE ?
+            ORDER BY vb.label_confidence DESC
+            LIMIT ?
+            """,
+            (f"%{query}%", limit)
+        ).fetchall()
+        
+        headers = ["Speaker", "Text", "Time (min)", "File"]
+        rows = [(name, text[:100] + "..." if len(text) > 100 else text, round(time/60, 2), file)
+                for name, text, time, file in results]
+        
+        print(f"\nSearch results for '{query}':")
+        print(tabulate(rows, headers=headers, tablefmt="grid"))
+    
+    def search_voice(self, voice_name: str, limit: int = 10):
+        """Search for verbalizations by voice."""
+        results = self.db.conn.execute(
+            """
+            SELECT vb.label, vb.start_time, af.basename
+            FROM verbalizations vb
+            JOIN voices v ON vb.voice_id = v.id
+            JOIN audible_files af ON vb.audible_file_uuid = af.uuid
+            WHERE v.display_name LIKE ?
+            ORDER BY vb.start_time
+            LIMIT ?
+            """,
+            (f"%{voice_name}%", limit)
+        ).fetchall()
+        
+        headers = ["Text", "Time (min)", "File"]
+        rows = [(text[:100] + "..." if len(text) > 100 else text, round(time/60, 2), file)
+                for text, time, file in results]
+        
+        print(f"\nVerbalizations by '{voice_name}':")
+        print(tabulate(rows, headers=headers, tablefmt="grid"))
+    
+    def export_transcripts(self, paths: List[str], recursive: bool = False):
+        """Export transcripts as sidecar files."""
+        files_to_export = []
+        
+        for path_str in paths:
+            path = Path(path_str)
+            if path.is_file():
+                files_to_export.append(path)
+            elif path.is_dir() and recursive:
+                # Find all processed audio files in directory
+                processed_files = self.db.conn.execute(
+                    "SELECT path FROM audible_files WHERE ingest_status = 'COMPLETE' AND path LIKE ?",
+                    (f"%{path}%",)
+                ).fetchall()
+                files_to_export.extend([Path(p[0]) for p in processed_files])
+        
+        if not files_to_export:
+            print("No files found to export.")
+            return
+        
+        for file_path in tqdm(files_to_export, desc="Exporting transcripts"):
+            self.export_single_file(file_path)
+    
+    def export_single_file(self, file_path: Path):
+        """Export transcript for a single file."""
+        file_uuid = self.db.get_file_uuid(str(file_path))
+        
+        # Get verbalizations
+        verbalizations = self.db.conn.execute(
+            """
+            SELECT vb.start_time, vb.duration, vb.label, v.display_name
+            FROM verbalizations vb
+            JOIN voices v ON vb.voice_id = v.id
+            WHERE vb.audible_file_uuid = ?
+            ORDER BY vb.start_time
+            """,
+            (file_uuid,)
+        ).fetchall()
+        
+        if not verbalizations:
+            print(f"No transcript found for {file_path.name}")
+            return
+        
+        # Generate SRT content
+        srt_content = []
+        for i, (start_time, duration, text, speaker) in enumerate(verbalizations, 1):
+            start_srt = self.seconds_to_srt_time(start_time)
+            end_srt = self.seconds_to_srt_time(start_time + duration)
+            
+            srt_content.append(f"{i}")
+            srt_content.append(f"{start_srt} --> {end_srt}")
+            srt_content.append(f"{speaker}: {text}")
+            srt_content.append("")
+        
+        # Write SRT file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        srt_path = file_path.with_suffix(f".exported_{timestamp}.srt")
+        
+        with open(srt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(srt_content))
+        
+        print(f"Exported transcript: {srt_path}")
+    
+    def seconds_to_srt_time(self, seconds: float) -> str:
+        """Convert seconds to SRT time format."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+    
+    def remove_files(self, paths: List[str], recursive: bool = False):
+        """Remove files from database."""
+        files_to_remove = []
+        
+        for path_str in paths:
+            path = Path(path_str)
+            if path.is_file():
+                files_to_remove.append(path)
+            elif path.is_dir() and recursive:
+                # Find all files in directory
+                db_files = self.db.conn.execute(
+                    "SELECT path FROM audible_files WHERE path LIKE ?",
+                    (f"%{path}%",)
+                ).fetchall()
+                files_to_remove.extend([Path(p[0]) for p in db_files])
+        
+        for file_path in files_to_remove:
+            file_uuid = self.db.get_file_uuid(str(file_path))
+            
+            # Remove from database
+            self.db.conn.execute("DELETE FROM verbalizations WHERE audible_file_uuid = ?", (file_uuid,))
+            self.db.conn.execute("DELETE FROM audible_files WHERE uuid = ?", (file_uuid,))
+            
+            print(f"Removed {file_path.name} from database")
+    
+    def reset_database(self):
+        """Reset the entire database."""
+        confirm = input("This will delete all data. Are you sure? (yes/no): ")
+        if confirm.lower() == 'yes':
+            self.db.conn.execute("DROP TABLE IF EXISTS verbalizations")
+            self.db.conn.execute("DROP TABLE IF EXISTS voices")
+            self.db.conn.execute("DROP TABLE IF EXISTS audible_files")
+            self.db.conn.execute("DROP TABLE IF EXISTS nonverbal_labels")
+            self.db.conn.execute("DROP TABLE IF EXISTS silents")
+            self.db.conn.execute("DROP TABLE IF EXISTS audible_embeddings")
+            self.db.conn.execute("DROP TABLE IF EXISTS exports")
+            self.db.conn.execute("DROP TABLE IF EXISTS export_voices")
+            self.db.conn.execute("DROP TABLE IF EXISTS audible_faiss_indexes")
+            
+            self.db.init_database()
+            print("Database reset complete.")
+        else:
+            print("Reset cancelled.")
+
+# CLI Command definitions
+@click.group()
+def cli():
+    """Audible Tools - Audio Processing and Transcription Tool"""
+    pass
+
+@cli.command()
+@click.argument('paths', nargs=-1, required=True)
+@click.option('-R', '--recursive', is_flag=True, help='Process directories recursively')
+def add(paths, recursive):
+    """Add audio files to the database."""
+    tool = AudioToolsCLI()
+    tool.add_files(list(paths), recursive)
+
+@cli.command()
+def status():
+    """Show processing status."""
+    tool = AudioToolsCLI()
+    tool.show_status()
+
+@cli.command()
+@click.argument('path', required=False)
+def ls(path):
+    """List files with their processing status."""
+    tool = AudioToolsCLI()
+    tool.list_files(path)
+
+@cli.group()
+def voices():
+    """Voice management commands."""
+    pass
+
+@voices.command('list')
+def voices_list():
+    """List all identified voices."""
+    tool = AudioToolsCLI()
+    tool.list_voices()
+
+@voices.command('rename')
+@click.argument('voice_id', type=int)
+@click.argument('new_name')
+def voices_rename(voice_id, new_name):
+    """Rename a voice."""
+    tool = AudioToolsCLI()
+    tool.rename_voice(voice_id, new_name)
+
+@cli.command()
+@click.argument('query')
+@click.option('--limit', default=10, help='Maximum number of results')
+def search(query, limit):
+    """Search for text in verbalizations."""
+    tool = AudioToolsCLI()
+    tool.search_text(query, limit)
+
+@cli.command()
+@click.argument('voice_name')
+@click.option('--limit', default=10, help='Maximum number of results')
+def voice(voice_name, limit):
+    """Search for verbalizations by voice."""
+    tool = AudioToolsCLI()
+    tool.search_voice(voice_name, limit)
+
+@cli.command()
+@click.argument('paths', nargs=-1, required=True)
+@click.option('-R', '--recursive', is_flag=True, help='Process directories recursively')
+def export(paths, recursive):
+    """Export transcripts as sidecar files."""
+    tool = AudioToolsCLI()
+    tool.export_transcripts(list(paths), recursive)
+
+@cli.command()
+@click.argument('paths', nargs=-1, required=True)
+@click.option('-R', '--recursive', is_flag=True, help='Process directories recursively')
+def rm(paths, recursive):
+    """Remove files from database."""
+    tool = AudioToolsCLI()
+    tool.remove_files(list(paths), recursive)
+
+@cli.command()
+def reset():
+    """Reset the entire database."""
+    tool = AudioToolsCLI()
+    tool.reset_database()
+
+if __name__ == '__main__':
+    cli()
