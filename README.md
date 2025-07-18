@@ -1,4 +1,15 @@
+Spatial Finder
 
+## Start Tauri application
+
+    npx tauri dev
+
+## Start front-end only
+
+    pnpm run dev
+
+-----------
+<!-- # OLD STUFF RELATED TO WHEN THIS WAS "DIRECTIONS" storm chasing app:
 Features:
 - upload OSM PBF to update data
 - view / interact with vector map
@@ -10,8 +21,6 @@ Features:
 - route to points of interest
   - estimate time en-route
 - measure distance
-
-
 
 
 I'm wanting to create an application with several layers for creating an offline map capable of running in Windows and accessing GPS via serial com 3. I plan to write the application partly using Rust and also using front-end typescript. I also need to develop a data pipeline to keep the app up to date on its own without having to go through a service or subscription. Here is how it'll work:
@@ -30,4 +39,4 @@ I'm wanting to create an application with several layers for creating an offline
 - ideally this app provides a browser dev environment, and can at any time build an executable either for MacOS or an .exe to test the whole thing. I want to use vite and typescript and svelte, ideally, and the only reason I need a backend at all is to be able to serve the PMtiles via byte range requests, and also the endpoint to create a route using osrm, and hopefully a websocket endpoint to keep track of the user's current location through the GPS updates. The trips can live in browser memory and should only be one trip at a time per client. 
 
 Based on this description, how should it be architected?
-
+ -->

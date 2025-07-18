@@ -1,0 +1,25 @@
+# Audio processing and transcription
+openai-whisper>=20231117
+pyannote.audio>=3.1.0
+librosa>=0.10.0
+soundfile>=0.12.1
+ffmpeg-python>=0.2.0
+
+# Database and search
+duckdb>=0.9.0
+faiss-cpu>=1.7.4
+
+# NLP and embeddings
+sentence-transformers>=2.2.2
+torch>=2.0.0
+transformers>=4.35.0
+
+# CLI and utilities
+click>=8.1.0
+tqdm>=4.66.0
+tabulate>=0.9.0
+python-dateutil>=2.8.2
+
+# Audio format support
+pydub>=0.25.1
+mutagen>=1.47.0

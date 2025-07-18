@@ -7,6 +7,9 @@
   --ff-blue-300: #3498db;
   --ff-blue-500: #40576d;
   --ff-blue-700: #1e374f;
+  --eigengrau: #16161d;
+
+  color-scheme: light dark;
 }
 
 %body-copy {
@@ -17,7 +20,7 @@
   font-style: normal;
   font-weight: var(--normal-weight);
   line-height: 1.5;
-  color: black;
+  color: light-dark(var(--eigengrau), white);
 }
 %code-copy {
   font-family: SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -26,7 +29,7 @@
 
 html {
   height: -webkit-fill-available;
-  background-color: whitesmoke;
+  background-color: light-dark(#f3f4f4, #353537);
 
   @extend %body-copy;
 }
@@ -52,4 +55,5 @@ h5 {
 #app {
   display: flex;
   flex-grow: 1;
+  flex-direction: column;
 }
