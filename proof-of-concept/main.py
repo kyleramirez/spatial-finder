@@ -39,13 +39,58 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Optional pyannote import
+# Required pyannote import
 try:
     from pyannote.audio import Pipeline
-    PYANNOTE_AVAILABLE = True
-except ImportError:
-    PYANNOTE_AVAILABLE = False
-    print("Warning: pyannote.audio not available. Speaker diarization will be disabled.")
+except ImportError as e:
+    print(f"ERROR: pyannote.audio is required but not available: {e}")
+    print("Please install pyannote.audio with: pip install pyannote.audio")
+    print("And ensure you have accepted the terms at: https://huggingface.co/pyannote/speaker-diarization-3.1")
+    sys.exit(1)
+
+# Apply monkeypatch fix for pyannote-audio issue #1861
+# This fixes the std() degrees of freedom <= 0 error when dimension size is 1
+try:
+    import pyannote.audio.models.blocks.pooling as pooling_module
+    
+    # Store the original torch.std function
+    original_std = torch.std
+    
+    def patched_std(input, dim=None, correction=1, keepdim=False, out=None):
+        """
+        Patched std function that handles the degrees of freedom <= 0 error.
+        Falls back to using correction=0 when the dimension size is 1.
+        """
+        if dim is not None and correction == 1:
+            # Check if the dimension size is 1 which would cause degrees of freedom <= 0
+            if input.size(dim) <= 1:
+                # Use unbiased estimator (correction=0) when dimension size is 1
+                return original_std(input, dim=dim, correction=0, keepdim=keepdim, out=out)
+        
+        # Otherwise use the original function
+        return original_std(input, dim=dim, correction=correction, keepdim=keepdim, out=out)
+    
+    # Apply the monkeypatch to torch.std
+    torch.std = patched_std
+    
+    # Also patch the tensor method if it exists
+    if hasattr(torch.Tensor, 'std'):
+        original_tensor_std = torch.Tensor.std
+        
+        def patched_tensor_std(self, dim=None, correction=1, keepdim=False):
+            """Patched tensor.std method that handles degrees of freedom <= 0."""
+            if dim is not None and correction == 1:
+                if self.size(dim) <= 1:
+                    return original_tensor_std(self, dim=dim, correction=0, keepdim=keepdim)
+            return original_tensor_std(self, dim=dim, correction=correction, keepdim=keepdim)
+        
+        torch.Tensor.std = patched_tensor_std
+    
+    print("Applied monkeypatch fix for pyannote-audio std() degrees of freedom issue")
+    
+except Exception as e:
+    print(f"Warning: Could not apply pyannote-audio monkeypatch: {e}")
+    print("Continuing without monkeypatch - you may encounter std() warnings")
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
@@ -346,12 +391,17 @@ class AudioProcessor:
                 else:
                     raise e
         
-        if self.diarization_pipeline is None and PYANNOTE_AVAILABLE:
+        if self.diarization_pipeline is None:
             print("Loading speaker diarization pipeline...")
             hf_token = os.getenv('HUGGINGFACE_TOKEN')
             if not hf_token:
-                print("Warning: HUGGINGFACE_TOKEN not found. Speaker diarization will be limited.")
-                return
+                print("ERROR: HUGGINGFACE_TOKEN is required for speaker diarization.")
+                print("Please:")
+                print("1. Visit https://huggingface.co/pyannote/speaker-diarization-3.1")
+                print("2. Accept the terms and conditions")
+                print("3. Get your token from https://huggingface.co/settings/tokens")
+                print("4. Create a .env file with: HUGGINGFACE_TOKEN=your_token_here")
+                raise RuntimeError("HUGGINGFACE_TOKEN is required for speaker diarization")
             
             try:
                 self.diarization_pipeline = Pipeline.from_pretrained(
@@ -365,10 +415,12 @@ class AudioProcessor:
                         self.diarization_pipeline.to(torch.device(self.device))
                     except Exception as e:
                         print(f"Failed to move diarization pipeline to {self.device}: {e}")
+                        print("Continuing with CPU for diarization...")
                         
             except Exception as e:
-                print(f"Failed to load speaker diarization pipeline: {e}")
-                print("Will use default voice assignment instead.")
+                print(f"ERROR: Failed to load speaker diarization pipeline: {e}")
+                print("This is a required feature. Please check your HUGGINGFACE_TOKEN and network connection.")
+                raise RuntimeError(f"Failed to load speaker diarization pipeline: {e}")
     
     @performance_monitor
     def get_audio_metadata(self, file_path: str) -> Dict[str, Any]:
@@ -451,15 +503,13 @@ class AudioProcessor:
                 warnings.filterwarnings("ignore", category=UserWarning, module="whisper")
                 result = self.whisper_model.transcribe(str(wav_path))
             
-            # Perform speaker diarization if available
-            diarization_result = None
-            if self.diarization_pipeline is not None:
-                print(f"Performing speaker diarization for {Path(file_path).name}...")
-                try:
-                    diarization_result = self.diarization_pipeline(str(wav_path))
-                except Exception as e:
-                    print(f"Speaker diarization failed ({str(e)[:100]}...), using default voice assignment")
-                    diarization_result = None
+            # Perform speaker diarization (required)
+            print(f"Performing speaker diarization for {Path(file_path).name}...")
+            try:
+                diarization_result = self.diarization_pipeline(str(wav_path))
+            except Exception as e:
+                print(f"ERROR: Speaker diarization failed: {e}")
+                raise RuntimeError(f"Speaker diarization failed: {e}")
             
             # Process segments with speaker diarization
             success = self.process_segments_with_diarization(file_uuid, result, diarization_result)
@@ -492,22 +542,21 @@ class AudioProcessor:
             return False
     
     @performance_monitor
-    def process_segments_with_diarization(self, file_uuid: str, whisper_result: Dict, diarization_result=None) -> bool:
+    def process_segments_with_diarization(self, file_uuid: str, whisper_result: Dict, diarization_result) -> bool:
         """Process Whisper segments with speaker diarization."""
         try:
             # Create speaker mapping
             speaker_map = {}
             
-            if diarization_result is not None:
-                # Create voices for each speaker found in diarization
-                for turn, _, speaker in diarization_result.itertracks(yield_label=True):
-                    if speaker not in speaker_map:
-                        # Create new voice for this speaker
-                        voice_id = self.db.conn.execute(
-                            "INSERT INTO voices (display_name) VALUES (?) RETURNING id",
-                            (f"Speaker {speaker}",)
-                        ).fetchone()[0]
-                        speaker_map[speaker] = voice_id
+            # Create voices for each speaker found in diarization
+            for turn, _, speaker in diarization_result.itertracks(yield_label=True):
+                if speaker not in speaker_map:
+                    # Create new voice for this speaker
+                    voice_id = self.db.conn.execute(
+                        "INSERT INTO voices (display_name) VALUES (?) RETURNING id",
+                        (f"Speaker {speaker}",)
+                    ).fetchone()[0]
+                    speaker_map[speaker] = voice_id
             
             # Process each segment
             for segment in whisper_result['segments']:
@@ -525,29 +574,31 @@ class AudioProcessor:
                 voice_id = None
                 voice_confidence = 0.0
                 
-                if diarization_result is not None:
-                    # Find overlapping speaker segment
-                    segment_midpoint = (start_time + end_time) / 2
-                    best_overlap = 0
-                    best_speaker = None
-                    
-                    for turn, _, speaker in diarization_result.itertracks(yield_label=True):
-                        overlap_start = max(start_time, turn.start)
-                        overlap_end = min(end_time, turn.end)
-                        overlap_duration = max(0, overlap_end - overlap_start)
-                        
-                        if overlap_duration > best_overlap:
-                            best_overlap = overlap_duration
-                            best_speaker = speaker
-                    
-                    if best_speaker:
-                        voice_id = speaker_map[best_speaker]
-                        voice_confidence = best_overlap / (end_time - start_time)
+                # Find overlapping speaker segment
+                segment_midpoint = (start_time + end_time) / 2
+                best_overlap = 0
+                best_speaker = None
                 
-                # Fall back to default voice if no speaker found
-                if voice_id is None:
-                    voice_id = self.db.get_or_create_default_voice()
-                    voice_confidence = 1.0
+                for turn, _, speaker in diarization_result.itertracks(yield_label=True):
+                    overlap_start = max(start_time, turn.start)
+                    overlap_end = min(end_time, turn.end)
+                    overlap_duration = max(0, overlap_end - overlap_start)
+                    
+                    if overlap_duration > best_overlap:
+                        best_overlap = overlap_duration
+                        best_speaker = speaker
+                
+                if best_speaker:
+                    voice_id = speaker_map[best_speaker]
+                    voice_confidence = best_overlap / (end_time - start_time)
+                else:
+                    # If no speaker overlap found, skip this segment or assign to first speaker
+                    if speaker_map:
+                        voice_id = list(speaker_map.values())[0]
+                        voice_confidence = 0.0
+                    else:
+                        print(f"Warning: No speakers found for segment at {start_time:.2f}s")
+                        continue
                 
                 # Generate text embedding
                 text_embedding = self.sentence_transformer.encode(text)
@@ -564,7 +615,7 @@ class AudioProcessor:
                     (
                         voice_id, file_uuid, start_time, end_time - start_time,
                         text, confidence, text_embedding_bytes, "all-MiniLM-L6-v2",
-                        voice_confidence, "pyannote-speaker-diarization-3.1" if diarization_result else "default"
+                        voice_confidence, "pyannote-speaker-diarization-3.1"
                     )
                 )
             

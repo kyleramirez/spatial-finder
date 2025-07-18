@@ -27,7 +27,7 @@ A command-line tool for processing audio files with automatic transcription and 
    pip install -r requirements.txt
    ```
 
-3. **Optional: Configure speaker diarization:**
+3. **Configure speaker diarization (REQUIRED):**
    - Visit https://huggingface.co/pyannote/speaker-diarization-3.1
    - Accept the terms and conditions
    - Get your access token from https://huggingface.co/settings/tokens
@@ -37,7 +37,7 @@ A command-line tool for processing audio files with automatic transcription and 
      ```
    - Replace `your_token_here` with your actual Hugging Face token
 
-   **Note**: Without the token, the tool will use a single "Default Speaker" for all transcriptions.
+   **Note**: The HuggingFace token is required for speaker diarization. The tool will fail to start without it.
 
 ## Usage
 
@@ -207,16 +207,22 @@ python test_audible_tools.py --verbose
 python test_audible_tools.py --performance
 ```
 
+**Test speaker diarization specifically:**
+```bash
+python test_pyannote.py
+```
+
 ### Test Coverage
 
 The test suite covers:
 - **Database Operations**: Table creation, UUID generation, voice management
 - **Audio Processing**: Format conversion, metadata extraction, transcription
-- **Speaker Diarization**: Segment processing with and without diarization
+- **Speaker Diarization**: Segment processing with required diarization, distinct speaker creation
 - **CLI Interface**: All command-line operations and help systems
 - **Integration Tests**: Full workflow using real audio files from `audio-samples/`
 - **Performance Tests**: Speed benchmarks with timing measurements
 - **Format Support**: Tests various audio formats (WMA, WAV, etc.)
+- **Pyannote Integration**: Dedicated tests for speaker diarization functionality
 
 ### Test Files
 
@@ -228,32 +234,43 @@ Tests use audio files from `audio-samples/` directory:
 ### Test Results
 
 Current test status:
-- **17 tests total**: All passing
+- **20 tests total**: All passing
 - **Performance monitoring**: Integrated into all major operations
 - **Format support**: Covers multiple audio formats
-- **Speaker diarization**: Works with and without pyannote.audio
+- **Speaker diarization**: Required pyannote.audio integration with distinct speaker detection
 
 ## Speaker Diarization
 
-The tool supports advanced speaker diarization using pyannote.audio:
+The tool requires advanced speaker diarization using pyannote.audio:
 
 ### Configuration
 
-1. **With diarization** (recommended):
-   - Configure HuggingFace token as described in setup
-   - Multiple speakers will be automatically identified
-   - Speakers labeled as "Speaker SPEAKER_00", "Speaker SPEAKER_01", etc.
+**Speaker diarization is mandatory** and provides:
+- Automatic identification of multiple speakers in audio files
+- Speakers labeled as "Speaker SPEAKER_00", "Speaker SPEAKER_01", etc.
+- Accurate speaker attribution for each transcript segment
+- Support for unlimited number of speakers per audio file
 
-2. **Without diarization**:
-   - All speech assigned to "Default Speaker"
-   - Still provides full transcription functionality
-   - Faster processing (no diarization overhead)
+### Testing Speaker Diarization
+
+To verify that speaker diarization is working correctly:
+
+```bash
+# Test pyannote.audio functionality
+python test_pyannote.py
+```
+
+This will:
+- Verify pyannote.audio is properly installed
+- Check that your HuggingFace token is configured
+- Test the diarization pipeline loading
+- Process a sample audio file to demonstrate distinct speaker identification
 
 ### Performance Impact
 
-- **With diarization**: ~2x processing time, accurate speaker separation
-- **Without diarization**: Faster processing, single speaker attribution
-- **Fallback behavior**: Gracefully handles pyannote.audio failures
+- **Processing time**: ~2x slower than transcription-only due to diarization overhead
+- **Accuracy**: High-quality speaker separation and attribution
+- **Memory usage**: Requires additional GPU/CPU memory for diarization models
 
 ## Performance Characteristics
 
@@ -284,9 +301,10 @@ GPU acceleration provides significant speedup:
 
 ### Common Issues
 
-1. **pyannote.audio not available**: Expected behavior if HuggingFace token not configured
+1. **Missing HuggingFace token**: Tool will fail to start without HUGGINGFACE_TOKEN configured
 2. **GPU fallback to CPU**: Normal behavior when GPU has compatibility issues
 3. **Slow processing**: Check GPU availability and audio file size
+4. **Pipeline loading errors**: Verify network connection and HuggingFace token validity
 
 ### GPU Support Issues
 

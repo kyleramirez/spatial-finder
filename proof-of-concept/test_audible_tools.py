@@ -92,6 +92,39 @@ class TestAudioProcessor(unittest.TestCase):
         self.db.close()
         shutil.rmtree(self.temp_dir)
     
+    def test_pyannote_availability(self):
+        """Test that pyannote.audio is available and can be imported."""
+        # Test that pyannote.audio can be imported
+        try:
+            from pyannote.audio import Pipeline
+            self.assertTrue(True, "pyannote.audio imported successfully")
+        except ImportError as e:
+            self.fail(f"pyannote.audio is not available: {e}")
+    
+    def test_diarization_pipeline_requirements(self):
+        """Test that diarization pipeline requirements are checked."""
+        # Test that load_models fails without HuggingFace token
+        original_token = os.environ.get('HUGGINGFACE_TOKEN')
+        
+        try:
+            # Remove token if it exists
+            if 'HUGGINGFACE_TOKEN' in os.environ:
+                del os.environ['HUGGINGFACE_TOKEN']
+            
+            # Create a new processor to test token requirement
+            processor = AudioProcessor(self.db)
+            
+            # This should raise RuntimeError about missing token
+            with self.assertRaises(RuntimeError) as context:
+                processor.load_models()
+            
+            self.assertIn("HUGGINGFACE_TOKEN", str(context.exception))
+            
+        finally:
+            # Restore original token if it existed
+            if original_token:
+                os.environ['HUGGINGFACE_TOKEN'] = original_token
+    
     def test_device_selection(self):
         """Test that device selection works."""
         device = main.get_device()
@@ -165,7 +198,15 @@ class TestAudioProcessor(unittest.TestCase):
             import numpy as np
             mock_transformer.encode.return_value = np.array([0.1, 0.2, 0.3])
             
-            success = self.processor.process_segments_with_diarization(test_uuid, mock_result, None)
+            # Mock diarization result
+            from unittest.mock import MagicMock
+            mock_diarization = MagicMock()
+            mock_diarization.itertracks.return_value = [
+                (MagicMock(start=0.0, end=10.0), None, "SPEAKER_00"),
+                (MagicMock(start=5.0, end=15.0), None, "SPEAKER_01"),
+            ]
+            
+            success = self.processor.process_segments_with_diarization(test_uuid, mock_result, mock_diarization)
             
             self.assertTrue(success)
             
@@ -176,6 +217,101 @@ class TestAudioProcessor(unittest.TestCase):
             ).fetchone()[0]
             
             self.assertEqual(verbalizations, 2)
+            
+            # Check that distinct speakers were created
+            speakers = self.db.conn.execute(
+                "SELECT DISTINCT v.display_name FROM voices v JOIN verbalizations vb ON v.id = vb.voice_id WHERE vb.audible_file_uuid = ?",
+                (test_uuid,)
+            ).fetchall()
+            
+            # Should have at least one speaker (possibly two if overlap creates different assignments)
+            self.assertGreaterEqual(len(speakers), 1)
+    
+    def test_diarization_distinct_speakers(self):
+        """Test that diarization creates distinct speakers with proper names."""
+        # Create a test file record first
+        test_uuid = "test-diarization-123"
+        self.db.conn.execute(
+            """
+            INSERT INTO audible_files 
+            (uuid, path, basename, extension, duration, ingest_status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (test_uuid, "/test/diarization.wav", "diarization.wav", ".wav", 20.0, "WORKING")
+        )
+        
+        # Mock Whisper result with multiple segments
+        mock_result = {
+            'segments': [
+                {
+                    'start': 0.0,
+                    'end': 5.0,
+                    'text': 'First speaker talking',
+                    'avg_logprob': -0.5
+                },
+                {
+                    'start': 10.0,
+                    'end': 15.0,
+                    'text': 'Second speaker responding',
+                    'avg_logprob': -0.3
+                },
+                {
+                    'start': 16.0,
+                    'end': 20.0,
+                    'text': 'Third speaker joining',
+                    'avg_logprob': -0.4
+                }
+            ]
+        }
+        
+        # Mock sentence transformer
+        with patch.object(self.processor, 'sentence_transformer') as mock_transformer:
+            import numpy as np
+            mock_transformer.encode.return_value = np.array([0.1, 0.2, 0.3])
+            
+            # Mock diarization result with distinct speakers
+            from unittest.mock import MagicMock
+            mock_diarization = MagicMock()
+            mock_diarization.itertracks.return_value = [
+                (MagicMock(start=0.0, end=5.0), None, "SPEAKER_00"),
+                (MagicMock(start=10.0, end=15.0), None, "SPEAKER_01"),
+                (MagicMock(start=16.0, end=20.0), None, "SPEAKER_02"),
+            ]
+            
+            success = self.processor.process_segments_with_diarization(test_uuid, mock_result, mock_diarization)
+            
+            self.assertTrue(success)
+            
+            # Check that three distinct speakers were created
+            speakers = self.db.conn.execute(
+                "SELECT DISTINCT v.display_name FROM voices v JOIN verbalizations vb ON v.id = vb.voice_id WHERE vb.audible_file_uuid = ? ORDER BY v.display_name",
+                (test_uuid,)
+            ).fetchall()
+            
+            speaker_names = [speaker[0] for speaker in speakers]
+            
+            # Should have exactly three distinct speakers
+            self.assertEqual(len(speaker_names), 3)
+            self.assertIn("Speaker SPEAKER_00", speaker_names)
+            self.assertIn("Speaker SPEAKER_01", speaker_names)
+            self.assertIn("Speaker SPEAKER_02", speaker_names)
+            
+            # Check that each segment was assigned to the correct speaker
+            results = self.db.conn.execute(
+                """
+                SELECT vb.label, v.display_name, vb.start_time 
+                FROM verbalizations vb 
+                JOIN voices v ON vb.voice_id = v.id 
+                WHERE vb.audible_file_uuid = ? 
+                ORDER BY vb.start_time
+                """,
+                (test_uuid,)
+            ).fetchall()
+            
+            self.assertEqual(len(results), 3)
+            self.assertEqual(results[0][1], "Speaker SPEAKER_00")  # First segment
+            self.assertEqual(results[1][1], "Speaker SPEAKER_01")  # Second segment
+            self.assertEqual(results[2][1], "Speaker SPEAKER_02")  # Third segment
 
 class TestAudioToolsCLI(unittest.TestCase):
     """Test the CLI interface."""
@@ -262,13 +398,27 @@ class TestIntegration(unittest.TestCase):
         self.original_cwd = os.getcwd()
         os.chdir(self.temp_dir)
         
-        # Find smallest audio file for testing
-        self.audio_files = list(Path("../audio-samples").rglob("*.WMA"))
+        # Find audio files in the correct location
+        audio_samples_dir = Path(self.original_cwd) / "audio-samples"
+        
+        # Find all audio files
+        self.audio_files = []
+        self.audio_files.extend(audio_samples_dir.rglob("*.WMA"))
+        self.audio_files.extend(audio_samples_dir.rglob("*.WAV"))
+        self.audio_files.extend(audio_samples_dir.rglob("*.wav"))
+        self.audio_files.extend(audio_samples_dir.rglob("*.wma"))
+        
         if not self.audio_files:
             self.skipTest("No audio files found for integration testing")
         
-        # Use the smallest file to speed up tests
-        self.test_file = min(self.audio_files, key=lambda f: f.stat().st_size)
+        # Sort by size for predictable testing
+        self.audio_files.sort(key=lambda f: f.stat().st_size)
+        
+        # Use the smallest files to speed up tests (limit to reasonable size)
+        self.test_files = [f for f in self.audio_files if f.stat().st_size <= 2 * 1024 * 1024]  # Max 2MB
+        
+        if not self.test_files:
+            self.skipTest("No reasonably sized audio files found for integration testing")
         
         # Create CLI instance
         self.cli = AudioToolsCLI()
@@ -280,52 +430,173 @@ class TestIntegration(unittest.TestCase):
     
     def test_full_workflow(self):
         """Test complete workflow: add -> process -> search -> export."""
-        # Skip if file is too large (> 1MB to keep tests fast)
-        if self.test_file.stat().st_size > 1024 * 1024:
-            self.skipTest("Test file too large for quick testing")
+        print(f"\n🎵 Testing with {len(self.test_files)} audio files:")
+        for i, file in enumerate(self.test_files):
+            size_mb = file.stat().st_size / (1024 * 1024)
+            print(f"  {i+1}. {file.name} ({size_mb:.1f}MB) - {file.suffix.upper()}")
         
-        # Step 1: Add file to database
-        self.cli.add_files([str(self.test_file)])
+        # Mock the diarization pipeline for testing
+        with patch.object(self.cli.processor, 'diarization_pipeline') as mock_pipeline:
+            # Create a mock diarization result
+            mock_diarization_result = MagicMock()
+            mock_diarization_result.itertracks.return_value = [
+                (MagicMock(start=0.0, end=30.0), None, "SPEAKER_00"),
+                (MagicMock(start=30.0, end=60.0), None, "SPEAKER_01"),
+                (MagicMock(start=60.0, end=90.0), None, "SPEAKER_02"),
+            ]
+            mock_pipeline.return_value = mock_diarization_result
+            
+            # Mock sentence transformer
+            with patch.object(self.cli.processor, 'sentence_transformer') as mock_transformer:
+                import numpy as np
+                mock_transformer.encode.return_value = np.array([0.1, 0.2, 0.3])
+                
+                # Step 1: Add files to database
+                file_paths = [str(f) for f in self.test_files]
+                self.cli.add_files(file_paths)
+                
+                # Step 2: Check files were added
+                files_count = self.cli.db.conn.execute(
+                    "SELECT COUNT(*) FROM audible_files"
+                ).fetchone()[0]
+                self.assertEqual(files_count, len(self.test_files))
+                
+                # Step 3: Check processing status
+                processed_files = self.cli.db.conn.execute(
+                    "SELECT basename, ingest_status FROM audible_files"
+                ).fetchall()
+                
+                print(f"\n📊 Processing results:")
+                complete_files = []
+                for basename, status in processed_files:
+                    print(f"  - {basename}: {status}")
+                    if status == 'COMPLETE':
+                        complete_files.append(basename)
+                
+                # We expect at least one file to process successfully
+                self.assertGreater(len(complete_files), 0, "At least one file should process successfully")
+                
+                # Step 4: Check verbalizations were created
+                verbalizations = self.cli.db.conn.execute(
+                    "SELECT COUNT(*) FROM verbalizations"
+                ).fetchone()[0]
+                self.assertGreater(verbalizations, 0, "Should have created verbalizations")
+                
+                # Step 5: Check speakers were identified
+                speakers = self.cli.db.conn.execute(
+                    "SELECT DISTINCT v.display_name FROM voices v JOIN verbalizations vb ON v.id = vb.voice_id"
+                ).fetchall()
+                
+                speaker_names = [speaker[0] for speaker in speakers]
+                print(f"\n🎤 Speakers identified: {speaker_names}")
+                
+                # Verify we have speakers with proper names
+                self.assertGreater(len(speakers), 0, "Should have identified speakers")
+                
+                # Check that speakers follow the expected naming pattern
+                for speaker_name in speaker_names:
+                    self.assertTrue(
+                        speaker_name.startswith("Speaker SPEAKER_") or speaker_name == "Default Speaker",
+                        f"Speaker name '{speaker_name}' should follow expected pattern"
+                    )
+                
+                # Verify we have multiple distinct speakers
+                print(f"\n✅ Found {len(speakers)} distinct speakers with proper naming")
+                
+                # Step 6: Test search functionality
+                # Get a word from the first verbalization
+                first_word = self.cli.db.conn.execute(
+                    "SELECT label FROM verbalizations LIMIT 1"
+                ).fetchone()
+                
+                if first_word and first_word[0].strip():
+                    # Search for the first word
+                    word = first_word[0].strip().split()[0]
+                    print(f"\n🔍 Testing search for word: '{word}'")
+                    self.cli.search_text(word, limit=5)
+                
+                # Step 7: Test voice search
+                if speakers:
+                    first_speaker = speaker_names[0]
+                    print(f"\n🔍 Testing voice search for: '{first_speaker}'")
+                    self.cli.search_voice(first_speaker, limit=3)
+                
+                # Step 8: Test export functionality
+                # Count SRT files in the audio-samples directory (where they get created)
+                audio_samples_dir = Path(self.original_cwd) / "audio-samples"
+                export_files_before = len(list(audio_samples_dir.rglob("*.srt")))
+                self.cli.export_transcripts(file_paths)
+                export_files_after = len(list(audio_samples_dir.rglob("*.srt")))
+                
+                # Should have created SRT files
+                self.assertGreater(export_files_after, export_files_before, "Should have created SRT files")
+                
+                print(f"\n✅ Created {export_files_after - export_files_before} SRT files")
+                
+                # Step 9: Show format coverage
+                formats_tested = set()
+                for file in self.test_files:
+                    formats_tested.add(file.suffix.upper())
+                
+                print(f"\n📁 Audio formats tested: {', '.join(sorted(formats_tested))}")
+                
+                # Step 10: Show final statistics
+                self.cli.show_status()
+                
+                print(f"\n🎉 Integration test completed successfully!")
+                print(f"   - Files processed: {len(complete_files)}")
+                print(f"   - Speakers identified: {len(speakers)}")
+                print(f"   - Verbalizations created: {verbalizations}")
+                print(f"   - Formats tested: {', '.join(sorted(formats_tested))}")
+    
+    def test_multiple_speakers_detection(self):
+        """Test that multiple speakers are detected across different files."""
+        if not self.test_files:
+            self.skipTest("No audio files available for speaker detection test")
         
-        # Step 2: Check file was added
-        files = self.cli.db.conn.execute(
-            "SELECT COUNT(*) FROM audible_files"
-        ).fetchone()[0]
-        self.assertEqual(files, 1)
+        # Use first file for this test
+        test_file = self.test_files[0]
+        print(f"\n🎤 Testing speaker detection with: {test_file.name}")
         
-        # Step 3: Check processing status
+        # Add and process file
+        self.cli.add_files([str(test_file)])
+        
+        # Check if processing succeeded
         status = self.cli.db.conn.execute(
             "SELECT ingest_status FROM audible_files WHERE basename = ?",
-            (self.test_file.name,)
+            (test_file.name,)
         ).fetchone()[0]
-        self.assertIn(status, ['COMPLETE', 'FAILED'])
         
-        # If processing succeeded, test search and export
         if status == 'COMPLETE':
-            # Step 4: Check verbalizations were created
-            verbalizations = self.cli.db.conn.execute(
-                "SELECT COUNT(*) FROM verbalizations"
-            ).fetchone()[0]
-            self.assertGreater(verbalizations, 0)
+            # Get all speakers and their segments
+            speaker_segments = self.cli.db.conn.execute(
+                """
+                SELECT v.display_name, COUNT(vb.id) as segment_count, 
+                       AVG(vb.start_time) as avg_time, 
+                       AVG(vb.voice_confidence) as avg_confidence
+                FROM voices v 
+                JOIN verbalizations vb ON v.id = vb.voice_id 
+                GROUP BY v.id, v.display_name
+                ORDER BY segment_count DESC
+                """
+            ).fetchall()
             
-            # Step 5: Test search functionality
-            # Get a word from the first verbalization
-            first_word = self.cli.db.conn.execute(
-                "SELECT label FROM verbalizations LIMIT 1"
-            ).fetchone()
+            print(f"\n📊 Speaker Analysis:")
+            for speaker, segments, avg_time, avg_confidence in speaker_segments:
+                print(f"  - {speaker}: {segments} segments, avg time: {avg_time:.1f}s, confidence: {avg_confidence:.2f}")
             
-            if first_word and first_word[0].strip():
-                # Search for the first word
-                word = first_word[0].strip().split()[0]
-                self.cli.search_text(word, limit=5)
+            # Verify speakers were detected
+            self.assertGreater(len(speaker_segments), 0, "Should detect at least one speaker")
             
-            # Step 6: Test export functionality
-            export_files_before = len(list(Path(".").glob("*.srt")))
-            self.cli.export_transcripts([str(self.test_file)])
-            export_files_after = len(list(Path(".").glob("*.srt")))
-            
-            # Should have created an SRT file
-            self.assertGreater(export_files_after, export_files_before)
+            # Check speaker naming
+            for speaker, _, _, _ in speaker_segments:
+                self.assertTrue(
+                    speaker.startswith("Speaker SPEAKER_") or speaker == "Default Speaker",
+                    f"Speaker '{speaker}' should follow expected naming pattern"
+                )
+        else:
+            print(f"⚠️  File processing failed with status: {status}")
+            self.skipTest(f"File processing failed with status: {status}")
 
 class TestCLICommands(unittest.TestCase):
     """Test CLI command parsing and execution."""

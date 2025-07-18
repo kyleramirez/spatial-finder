@@ -1,0 +1,6 @@
+virtualenv
+audio-samples
+__pycache__
+audible_tools.db
+*.db.wal
+cache

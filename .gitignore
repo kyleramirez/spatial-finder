@@ -1,11 +1,4 @@
 data
 node_modules
 dist
-proof-of-concept/virtualenv
-proof-of-concept/audio-samples
-proof-of-concept/__pycache__
-proof-of-concept/audible_tools.db
-proof-of-concept/cache
-proof-of-concept/benchmark_results.json
-proof-of-concept/.env
 .env
