@@ -284,11 +284,24 @@ class AudioProcessor:
         """Load ML models on demand."""
         if self.whisper_model is None:
             print("Loading Whisper model...")
-            # Suppress FP16 warnings when loading Whisper model
+            # Try the selected device first, but fall back to CPU if it fails
+            whisper_device = self.device
+            
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
                 warnings.filterwarnings("ignore", category=UserWarning, module="whisper")
-                self.whisper_model = whisper.load_model("base", device=self.device)
+                
+                try:
+                    self.whisper_model = whisper.load_model("base", device=whisper_device)
+                except Exception as e:
+                    if whisper_device == "mps":
+                        print(f"MPS failed for Whisper model ({str(e)[:100]}...), using CPU")
+                        whisper_device = "cpu"
+                        self.whisper_model = whisper.load_model("base", device=whisper_device)
+                        # Update the device for all future operations
+                        self.device = "cpu"
+                    else:
+                        raise e
         
         if self.sentence_transformer is None:
             print("Loading sentence transformer...")
