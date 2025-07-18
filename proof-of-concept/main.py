@@ -12,11 +12,13 @@ import subprocess
 import tempfile
 import shutil
 import warnings
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import wraps
 
 import click
 import duckdb
@@ -32,6 +34,18 @@ from tabulate import tabulate
 import faiss
 from sentence_transformers import SentenceTransformer
 import whisper
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Optional pyannote import
+try:
+    from pyannote.audio import Pipeline
+    PYANNOTE_AVAILABLE = True
+except ImportError:
+    PYANNOTE_AVAILABLE = False
+    print("Warning: pyannote.audio not available. Speaker diarization will be disabled.")
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
@@ -44,6 +58,19 @@ SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.wm
 SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm'}
 CHUNK_SIZE = 5.0  # seconds for audio embeddings
 OVERLAP_SIZE = 2.5  # seconds overlap for audio embeddings
+
+# Performance monitoring
+def performance_monitor(func):
+    """Decorator to monitor function execution time."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        duration = end_time - start_time
+        print(f"⏱️  {func.__name__} took {duration:.2f} seconds")
+        return result
+    return wrapper
 
 def get_device():
     """Get the best available device (GPU or CPU)."""
@@ -276,10 +303,12 @@ class AudioProcessor:
         self.db = db
         self.whisper_model = None
         self.sentence_transformer = None
+        self.diarization_pipeline = None
         self.device = get_device()
         self.cache_dir = Path(CACHE_DIR)
         self.cache_dir.mkdir(exist_ok=True)
     
+    @performance_monitor
     def load_models(self):
         """Load ML models on demand."""
         if self.whisper_model is None:
@@ -316,7 +345,32 @@ class AudioProcessor:
                     self.sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2', device=sentence_device)
                 else:
                     raise e
+        
+        if self.diarization_pipeline is None and PYANNOTE_AVAILABLE:
+            print("Loading speaker diarization pipeline...")
+            hf_token = os.getenv('HUGGINGFACE_TOKEN')
+            if not hf_token:
+                print("Warning: HUGGINGFACE_TOKEN not found. Speaker diarization will be limited.")
+                return
+            
+            try:
+                self.diarization_pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization-3.1",
+                    use_auth_token=hf_token
+                )
+                
+                # Try to move to appropriate device
+                if self.device != "cpu":
+                    try:
+                        self.diarization_pipeline.to(torch.device(self.device))
+                    except Exception as e:
+                        print(f"Failed to move diarization pipeline to {self.device}: {e}")
+                        
+            except Exception as e:
+                print(f"Failed to load speaker diarization pipeline: {e}")
+                print("Will use default voice assignment instead.")
     
+    @performance_monitor
     def get_audio_metadata(self, file_path: str) -> Dict[str, Any]:
         """Extract audio metadata using ffprobe."""
         try:
@@ -361,6 +415,7 @@ class AudioProcessor:
             print(f"Error getting metadata for {file_path}: {e}")
             return {}
     
+    @performance_monitor
     def convert_audio_to_wav(self, input_path: str, output_path: str) -> bool:
         """Convert audio file to WAV format."""
         try:
@@ -377,8 +432,9 @@ class AudioProcessor:
             print(f"Error converting {input_path} to WAV: {e}")
             return False
     
+    @performance_monitor
     def process_audio_file(self, file_path: str, file_uuid: str) -> bool:
-        """Process a single audio file with Whisper (no speaker diarization for now)."""
+        """Process a single audio file with Whisper and speaker diarization."""
         try:
             self.load_models()
             
@@ -395,8 +451,18 @@ class AudioProcessor:
                 warnings.filterwarnings("ignore", category=UserWarning, module="whisper")
                 result = self.whisper_model.transcribe(str(wav_path))
             
-            # Process segments (without speaker diarization)
-            success = self.process_segments(file_uuid, result)
+            # Perform speaker diarization if available
+            diarization_result = None
+            if self.diarization_pipeline is not None:
+                print(f"Performing speaker diarization for {Path(file_path).name}...")
+                try:
+                    diarization_result = self.diarization_pipeline(str(wav_path))
+                except Exception as e:
+                    print(f"Speaker diarization failed ({str(e)[:100]}...), using default voice assignment")
+                    diarization_result = None
+            
+            # Process segments with speaker diarization
+            success = self.process_segments_with_diarization(file_uuid, result, diarization_result)
             
             if success:
                 # Update status
@@ -425,11 +491,23 @@ class AudioProcessor:
             )
             return False
     
-    def process_segments(self, file_uuid: str, whisper_result: Dict) -> bool:
-        """Process Whisper segments (without speaker diarization)."""
+    @performance_monitor
+    def process_segments_with_diarization(self, file_uuid: str, whisper_result: Dict, diarization_result=None) -> bool:
+        """Process Whisper segments with speaker diarization."""
         try:
-            # Get or create default voice for all segments
-            voice_id = self.db.get_or_create_default_voice()
+            # Create speaker mapping
+            speaker_map = {}
+            
+            if diarization_result is not None:
+                # Create voices for each speaker found in diarization
+                for turn, _, speaker in diarization_result.itertracks(yield_label=True):
+                    if speaker not in speaker_map:
+                        # Create new voice for this speaker
+                        voice_id = self.db.conn.execute(
+                            "INSERT INTO voices (display_name) VALUES (?) RETURNING id",
+                            (f"Speaker {speaker}",)
+                        ).fetchone()[0]
+                        speaker_map[speaker] = voice_id
             
             # Process each segment
             for segment in whisper_result['segments']:
@@ -442,6 +520,34 @@ class AudioProcessor:
                     continue
                 
                 confidence = segment.get('avg_logprob', 0.0)
+                
+                # Find the speaker for this segment
+                voice_id = None
+                voice_confidence = 0.0
+                
+                if diarization_result is not None:
+                    # Find overlapping speaker segment
+                    segment_midpoint = (start_time + end_time) / 2
+                    best_overlap = 0
+                    best_speaker = None
+                    
+                    for turn, _, speaker in diarization_result.itertracks(yield_label=True):
+                        overlap_start = max(start_time, turn.start)
+                        overlap_end = min(end_time, turn.end)
+                        overlap_duration = max(0, overlap_end - overlap_start)
+                        
+                        if overlap_duration > best_overlap:
+                            best_overlap = overlap_duration
+                            best_speaker = speaker
+                    
+                    if best_speaker:
+                        voice_id = speaker_map[best_speaker]
+                        voice_confidence = best_overlap / (end_time - start_time)
+                
+                # Fall back to default voice if no speaker found
+                if voice_id is None:
+                    voice_id = self.db.get_or_create_default_voice()
+                    voice_confidence = 1.0
                 
                 # Generate text embedding
                 text_embedding = self.sentence_transformer.encode(text)
@@ -458,7 +564,7 @@ class AudioProcessor:
                     (
                         voice_id, file_uuid, start_time, end_time - start_time,
                         text, confidence, text_embedding_bytes, "all-MiniLM-L6-v2",
-                        1.0, "whisper-only"
+                        voice_confidence, "pyannote-speaker-diarization-3.1" if diarization_result else "default"
                     )
                 )
             
@@ -475,6 +581,7 @@ class AudioToolsCLI:
         self.db = AudioDatabase()
         self.processor = AudioProcessor(self.db)
     
+    @performance_monitor
     def add_files(self, paths: List[str], recursive: bool = False):
         """Add audio files to the database."""
         files_to_process = []
@@ -532,6 +639,7 @@ class AudioToolsCLI:
         # Process queued files
         self.process_queued_files()
     
+    @performance_monitor
     def process_queued_files(self):
         """Process all queued files."""
         queued_files = self.db.conn.execute(

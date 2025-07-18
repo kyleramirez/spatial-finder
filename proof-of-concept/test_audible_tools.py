@@ -165,7 +165,7 @@ class TestAudioProcessor(unittest.TestCase):
             import numpy as np
             mock_transformer.encode.return_value = np.array([0.1, 0.2, 0.3])
             
-            success = self.processor.process_segments(test_uuid, mock_result)
+            success = self.processor.process_segments_with_diarization(test_uuid, mock_result, None)
             
             self.assertTrue(success)
             
