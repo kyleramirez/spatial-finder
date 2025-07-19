@@ -25,6 +25,7 @@
   "cSpell.words": [
     "dateutil",
     "dotenv",
-    "tqdm"
+    "tqdm",
+    "virtualenv"
   ]
 }

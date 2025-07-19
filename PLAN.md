@@ -10,19 +10,19 @@
 ## Planned features for command line proof of concept
 1. Ingest audio by given individual file or by recursing through chosen directory
 
-       ./audible_tools.py add ./audio-samples/ds40/DS400292.WMA
-       ./audible_tools.py add -R ./audio-samples
+       (virtualenv)$ > python main.py add ./audio-samples/ds40/DS400292.WMA
+       (virtualenv)$ > python main.py add -R ./audio-samples
 
    This will ingest the audio found at those locations into the database. It must return a proper exit code and log stats on what it did. Ultimately, this will queue a list of files to be processed. So if the file is an audio file, save it in `audio_files`, and queue the job to process it. This is also how to rebuild resources in the system if the information is now stale. All newly found files will be created, any no-longer-existing files will be cleaned from the database, and all existing files will be skipped unless they have changed, e.g. if their deterministically created uuid is different.
 
 1. Check out the status of the running jobs, and other relevant totals
 
-       ./audible_tools.py status
+       (virtualenv)$ > python main.py status
 
 
 1. Browse files by stats, speakers, timeline, text, processing status
 
-       ./audible_tools.py ls ./audio-samples
+       (virtualenv)$ > python main.py ls ./audio-samples
 
    This could come back with a table of information such as:
    |File|Added|Status|Voices|Transcript|Info|
@@ -33,39 +33,39 @@
 
 1. List, name and merge speakers, listen to most representative (centroid) audio clip
 
-       ./audible_tools.py voices list
+       (virtualenv)$ > python main.py voices list
        # Lists known voices and their most relevant clip location I can play (ideally in ogg)
 
-       ./audible_tools.py voices show person1
+       (virtualenv)$ > python main.py voices show person1
        # Shows speaker and associated clips
 
-       ./audible_tools.py voices rename person1 Mike
+       (virtualenv)$ > python main.py voices rename person1 Mike
        # Renames voices
 
-       ./audible_tools.py voices merge Mike person25 --dry-run
+       (virtualenv)$ > python main.py voices merge Mike person25 --dry-run
        # Changes all records associated with person25 to be associated with Mike, deletes person25. Use transaction if capable, can do a dry run
 
 1. Search by voice, plain english
 
-       ./audible_tools.py voice search Mike
-       ./audible_tools.py search "Dinner plans"
+       (virtualenv)$ > python main.py voice search Mike
+       (virtualenv)$ > python main.py search "Dinner plans"
 
    This will show listenable clips of Mike or clips most related to dinner plans with a configurable threshold.
 
 1. Export transcript(s) as sidecar to original audio file by individual file or for entire directory recursively, overwriting as needed
 
-       ./audible_tools.py export ./audio-samples/ds40/DS400292.WMA
-       ./audible_tools.py export -R ./audio-samples
+       (virtualenv)$ > python main.py export ./audio-samples/ds40/DS400292.WMA
+       (virtualenv)$ > python main.py export -R ./audio-samples
 
 1. Erase all managed data
 
-       ./audible_tools.py reset
+       (virtualenv)$ > python main.py reset
 
    This will prompt for a confirmation to destroy all internal databases and restart from scratch
 1. You can also remove the database records for the files manually without rebuilding or deleting the files themselves similar to how you added them:
 
-       ./audible_tools.py rm ./audio-samples/ds40/DS400292.WMA
-       ./audible_tools.py rm -R ./audio-samples
+       (virtualenv)$ > python main.py rm ./audio-samples/ds40/DS400292.WMA
+       (virtualenv)$ > python main.py rm -R ./audio-samples
 
 ## Implementation notes
 - Include any instructions it takes to initialize such as things that aren't covered by pip install but ideally keep the OS dependencies very low and ask first. Create a Dockerfile if needed to document / contain external dependencies.
@@ -82,7 +82,7 @@
         pip install -r requirements.txt
   - The audible_tools.py must call the main.py
 
-        ./audible_tools.py <command> <args>
+        (virtualenv)$ > python main.py <command> <args>
 - Write sensible python tests and execute them as you go to ensure you're staying on track
 - Plan on a completely non-destructive interface for performing operations except for when overwriting previously generated transcripts as sidecar files. If they export original-audio.mp3, the exported file should be something like original-audio-exported-{timestamp-of-export}.mp3 exported to the same location by default but also able to specify a destination, and under no circumstance can it overwrite original files
 - Plan on encountering 32-bit float audio, so will need to convert to a usable format

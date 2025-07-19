@@ -48,66 +48,66 @@ A command-line tool for processing audio files with automatic transcription and 
 
 **Add audio files to database:**
 ```bash
-./audible_tools.py add ./audio-file.mp3
-./audible_tools.py add -R ./audio-directory/  # Recursive
+(virtualenv)$ > python main.py add ./audio-file.mp3
+(virtualenv)$ > python main.py add -R ./audio-directory/  # Recursive
 ```
 
 **Check processing status:**
 ```bash
-./audible_tools.py status
+(virtualenv)$ > python main.py status
 ```
 
 **List files:**
 ```bash
-./audible_tools.py ls
-./audible_tools.py ls ./audio-directory/
+(virtualenv)$ > python main.py ls
+(virtualenv)$ > python main.py ls ./audio-directory/
 ```
 
 ### Voice Management
 
 **List identified voices:**
 ```bash
-./audible_tools.py voices list
+(virtualenv)$ > python main.py voices list
 ```
 
 **Rename a voice:**
 ```bash
-./audible_tools.py voices rename 1 "Mike"
+(virtualenv)$ > python main.py voices rename 1 "Mike"
 ```
 
 ### Search and Discovery
 
 **Search transcripts:**
 ```bash
-./audible_tools.py search "dinner plans"
-./audible_tools.py search "meeting" --limit 20
+(virtualenv)$ > python main.py search "dinner plans"
+(virtualenv)$ > python main.py search "meeting" --limit 20
 ```
 
 **Find all speech by a specific voice:**
 ```bash
-./audible_tools.py voice "Mike"
-./audible_tools.py voice "Speaker_1" --limit 15
+(virtualenv)$ > python main.py voice "Mike"
+(virtualenv)$ > python main.py voice "Speaker_1" --limit 15
 ```
 
 ### Export Transcripts
 
 **Export as SRT files:**
 ```bash
-./audible_tools.py export ./audio-file.mp3
-./audible_tools.py export -R ./audio-directory/
+(virtualenv)$ > python main.py export ./audio-file.mp3
+(virtualenv)$ > python main.py export -R ./audio-directory/
 ```
 
 ### Database Management
 
 **Remove files from database:**
 ```bash
-./audible_tools.py rm ./audio-file.mp3
-./audible_tools.py rm -R ./audio-directory/
+(virtualenv)$ > python main.py rm ./audio-file.mp3
+(virtualenv)$ > python main.py rm -R ./audio-directory/
 ```
 
 **Reset entire database:**
 ```bash
-./audible_tools.py reset
+(virtualenv)$ > python main.py reset
 ```
 
 ## Performance Features
