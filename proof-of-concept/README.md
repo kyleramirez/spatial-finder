@@ -1,3 +1,6 @@
+
+# TODO: Add devices table
+
 # Audible Tools - Audio Processing and Transcription Tool
 
 A command-line tool for processing audio files with automatic transcription and speaker diarization.

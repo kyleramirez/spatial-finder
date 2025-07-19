@@ -19,5 +19,12 @@
   "[markdown]": {
     "editor.wordWrap": "bounded",
     "editor.wordWrapColumn": 80
-  }
+  },
+  "python.defaultInterpreterPath": "${workspaceFolder}/proof-of-concept/virtualenv/bin/python",
+  "python.envFile": "${workspaceFolder}/proof-of-concept/.env",
+  "cSpell.words": [
+    "dateutil",
+    "dotenv",
+    "tqdm"
+  ]
 }
