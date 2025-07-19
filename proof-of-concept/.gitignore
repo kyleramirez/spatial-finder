@@ -1,6 +1,6 @@
 virtualenv
 audio-samples
 __pycache__
-audible_tools.db
+audible-tools.db
 *.db.wal
 cache

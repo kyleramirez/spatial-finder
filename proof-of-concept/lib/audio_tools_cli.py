@@ -1,9 +1,9 @@
 from pathlib import Path
 from tqdm import tqdm
 from typing import List
-from lib.utils import SUPPORTED_AUDIO_FORMATS, SUPPORTED_VIDEO_FORMATS, SUPPORTED_CONTAINER_FORMATS
-from lib.audio_database import AudioDatabase
-from lib.audio_processor import AudioProcessor
+from .utils import SUPPORTED_AUDIO_FORMATS, SUPPORTED_VIDEO_FORMATS, SUPPORTED_CONTAINER_FORMATS
+from .audio_database import AudioDatabase
+from .audio_processor import AudioProcessor
 
 
 class AudioToolsCLI:

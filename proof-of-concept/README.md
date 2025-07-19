@@ -48,66 +48,66 @@ A command-line tool for processing audio files with automatic transcription and 
 
 **Add audio files to database:**
 ```bash
-./audible-tools.py add ./audio-file.mp3
-./audible-tools.py add -R ./audio-directory/  # Recursive
+./audible_tools.py add ./audio-file.mp3
+./audible_tools.py add -R ./audio-directory/  # Recursive
 ```
 
 **Check processing status:**
 ```bash
-./audible-tools.py status
+./audible_tools.py status
 ```
 
 **List files:**
 ```bash
-./audible-tools.py ls
-./audible-tools.py ls ./audio-directory/
+./audible_tools.py ls
+./audible_tools.py ls ./audio-directory/
 ```
 
 ### Voice Management
 
 **List identified voices:**
 ```bash
-./audible-tools.py voices list
+./audible_tools.py voices list
 ```
 
 **Rename a voice:**
 ```bash
-./audible-tools.py voices rename 1 "Mike"
+./audible_tools.py voices rename 1 "Mike"
 ```
 
 ### Search and Discovery
 
 **Search transcripts:**
 ```bash
-./audible-tools.py search "dinner plans"
-./audible-tools.py search "meeting" --limit 20
+./audible_tools.py search "dinner plans"
+./audible_tools.py search "meeting" --limit 20
 ```
 
 **Find all speech by a specific voice:**
 ```bash
-./audible-tools.py voice "Mike"
-./audible-tools.py voice "Speaker_1" --limit 15
+./audible_tools.py voice "Mike"
+./audible_tools.py voice "Speaker_1" --limit 15
 ```
 
 ### Export Transcripts
 
 **Export as SRT files:**
 ```bash
-./audible-tools.py export ./audio-file.mp3
-./audible-tools.py export -R ./audio-directory/
+./audible_tools.py export ./audio-file.mp3
+./audible_tools.py export -R ./audio-directory/
 ```
 
 ### Database Management
 
 **Remove files from database:**
 ```bash
-./audible-tools.py rm ./audio-file.mp3
-./audible-tools.py rm -R ./audio-directory/
+./audible_tools.py rm ./audio-file.mp3
+./audible_tools.py rm -R ./audio-directory/
 ```
 
 **Reset entire database:**
 ```bash
-./audible-tools.py reset
+./audible_tools.py reset
 ```
 
 ## Performance Features
@@ -171,7 +171,7 @@ The tool uses a comprehensive schema with tables for:
 ## Output Files
 
 - **Transcripts**: `original-file.exported_YYYYMMDD_HHMMSS.srt`
-- **Database**: `audible_tools.db`
+- **Database**: `audible-tools.db`
 - **Cache**: `cache/` directory for temporary audio files
 
 ## Supported Formats

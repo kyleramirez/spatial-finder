@@ -1,6 +1,6 @@
-import hashlib
 import duckdb
-from utils import DB_PATH
+import hashlib
+from .utils import DB_PATH
 
 
 class AudioDatabase:

@@ -1,9 +1,9 @@
 from pathlib import Path
 from typing import Dict, Any
-import mimetypes
 import ffmpeg
-from utils import CACHE_DIR, get_device, extract_creation_time, get_frame_rate
-from audio_database import AudioDatabase
+import mimetypes
+from .utils import CACHE_DIR, get_device, extract_creation_time, get_frame_rate
+from .audio_database import AudioDatabase
 
 
 class AudioProcessor:
