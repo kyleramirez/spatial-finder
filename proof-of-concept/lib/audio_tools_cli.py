@@ -77,9 +77,10 @@ class AudioToolsCLI:
                     video_bitrate,
                     video_bit_depth,
                     color_space,
-                    profile
+                    profile,
+                    encoder
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_uuid,
@@ -106,6 +107,7 @@ class AudioToolsCLI:
                     metadata.get("video_bit_depth"),
                     metadata.get("color_space"),
                     metadata.get("profile"),
+                    metadata.get("encoder"),
                 ),
             )
 

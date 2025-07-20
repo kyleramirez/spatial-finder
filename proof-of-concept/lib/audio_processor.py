@@ -108,10 +108,13 @@ class AudioProcessor:
                 "mime": mimetypes.guess_type(file_path)[0] or "application/octet-stream",
                 "duration": float(format_info.get("duration", 0)),
                 "bitrate": int(format_info.get("bit_rate", 0)),
-                "container_format": format_info.get("format_name", "").split(",")[0] or None,
-                "container_format_long": format_info.get("format_long_name", "").split(",")[0] or None,
+                "container_format": format_info.get("format_name", None),
+                "container_format_long": format_info.get("format_long_name", None),
                 "has_video": video_stream is not None,
                 "creation_date": creation_date,
+                "encoder": format_info.get("tags", {}).get(
+                    "encoder", format_info.get("tags", {}).get("encoded_by", None)
+                ),
             }
             if audio_stream:
                 metadata.update(

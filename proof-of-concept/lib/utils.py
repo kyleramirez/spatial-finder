@@ -35,10 +35,9 @@ CACHE_DIR = "cache"
 # OVERLAP_SIZE = 2.5  # seconds overlap for audio embeddings
 # spell-checker: disable
 # fmt: off
-# TODO: DO THIS ALL OVER AGAIN BECAUSE IT WAS MISSING WMA
-SUPPORTED_AUDIO_FORMATS = {".aac", ".ac3", ".ac4", ".adx", ".aea", ".amr", ".apm", ".aptx", ".argo_asf", ".ast", ".au", ".audiotoolbox", ".bit", ".caf", ".codec2raw", ".dfpwm", ".dts", ".eac3", ".f32be", ".f32le", ".f64be", ".f64le", ".g722", ".g726", ".g726le", ".gsm", ".iamf", ".latm", ".lc3", ".mlp", ".mmf", ".mp2", ".oga", ".oma", ".opus", ".rso", ".s16be", ".s24be", ".s24le", ".s32be", ".s32le", ".sbc", ".sf", ".sox", ".spdif", ".spx", ".tta", ".u16be", ".u24be", ".u24le", ".u32be", ".u32le", ".vidc", ".voc", ".w64", ".wav", ".wv", ".wma"}
-SUPPORTED_VIDEO_FORMATS = {".a64",".apng",".avif",".avs",".avs3",".dnxhd",".evc",".fits",".gif",".h261",".h263",".h264",".hevc",".ico",".image2pipe",".ivf",".mjpg",".mkvtimestamp_v2",".obu",".sdl",".sdl2",".vc1",".vvc",".webp"}
-SUPPORTED_CONTAINER_FORMATS = {".3g2",".3gp",".amv",".asf",".avi",".avm2",".dv",".dvd",".f4v",".flv",".gxf",".ismv",".mov",".mp4",".mpg",".mxf_d10",".mxf",".nut",".ogg",".ogv",".rm",".roq",".smjpeg",".swf",".vcd",".vob",".webm",".wtv", ".m4a"}
+SUPPORTED_AUDIO_FORMATS = {".aac",".ac3",".ac4",".adts",".adx",".aea",".amr",".apm",".aptx",".argo_asf",".ast",".au",".audiotoolbox",".bit",".caf",".codec2raw",".dfpwm",".dts",".eac3",".f32be",".f32le",".f64be",".f64le",".g722",".g726",".g726le",".gsm",".iamf",".latm",".lc3",".loas",".m2a",".mlp",".mmf",".mp2",".mpa",".oga",".oma",".opus",".rso",".s16be",".s24be",".s24le",".s32be",".s32le",".sbc",".sf",".sox",".spdif",".spx",".tta",".u16be",".u24be",".u24le",".u32be",".u32le",".vidc",".voc",".w64",".wav",".wv"}
+SUPPORTED_VIDEO_FORMATS = {".a64",".apng",".avif",".avs",".avs2",".avs3",".dnxhd",".evc",".fits",".gif",".h261",".h263",".h264",".hevc",".ico",".image2pipe",".ivf",".m1v",".m2v",".mjpeg",".mjpg",".mkvtimestamp_v2",".obu",".sdl",".sdl2",".vc1",".vvc",".webp"}
+SUPPORTED_CONTAINER_FORMATS = {".3g2",".3gp",".aif",".aifc",".aiff",".amv",".asf",".avi",".avm2",".dv",".dvd",".f4v",".flac",".flv",".gxf",".ismv",".m2t",".m2ts",".m4a",".m4v",".mkv",".mov",".mp3",".mp4",".mpeg",".mpg",".mts",".mxf_d10",".mxf",".null",".nut",".ogg",".ogv",".ra",".rm",".roq",".smjpeg",".swf",".ts",".vcd",".vob",".webm",".wma",".wmv",".wtv"}
 # fmt: on
 # spell-checker: enable
 
