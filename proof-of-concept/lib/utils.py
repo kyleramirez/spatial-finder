@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
 """
 Utility functions for audio processing and database management.
 """
+
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 # from dataclasses import dataclass
 # from datetime import datetime
@@ -116,6 +116,24 @@ def get_device(verbose=True, require_gpu=False):
         print("Using CPU")
     return torch.device("cpu")
 
+
+from xml.etree import ElementTree as ET
+
+
+# Change encoder to device_make
+def get_device_make(probe):
+    pass
+
+
+def get_device_model(probe):
+    pass
+
+
+# get_product(),
+#                 "manufacturer": get_manufacturer(probe),
+# format_info.get("tags", {}).get(
+#                     "encoder", format_info.get("tags", {}).get("encoded_by", None)
+#                 )
 
 # # Performance monitoring
 # def performance_monitor(func):

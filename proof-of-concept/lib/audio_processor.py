@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Dict, Any
 import ffmpeg
 import mimetypes
-from .utils import CACHE_DIR, get_device, extract_creation_time, get_frame_rate
+from .utils import CACHE_DIR, get_device, extract_creation_time, get_frame_rate, get_device_make, get_device_model
 from .audio_database import AudioDatabase
 
 
@@ -93,7 +93,6 @@ class AudioProcessor:
         try:
             probe = ffmpeg.probe(file_path)
             format_info = probe["format"]
-
             audio_stream = None
             video_stream = None
 
@@ -108,21 +107,33 @@ class AudioProcessor:
                 "mime": mimetypes.guess_type(file_path)[0] or "application/octet-stream",
                 "duration": float(format_info.get("duration", 0)),
                 "bitrate": int(format_info.get("bit_rate", 0)),
-                "container_format": format_info.get("format_name", None),
-                "container_format_long": format_info.get("format_long_name", None),
+                "container_format": format_info.get("format_long_name", None),
                 "has_video": video_stream is not None,
                 "creation_date": creation_date,
-                "encoder": format_info.get("tags", {}).get(
-                    "encoder", format_info.get("tags", {}).get("encoded_by", None)
-                ),
+                "device_make": get_device_make(probe),
+                "device_model": get_device_model(probe),
             }
+            # Rename encoder column to device_make
+            # Add device_model TEXT column
+            # Remove container_format_long, codec_long, video_codec_long columns
+            # Check panasonic video codec and put that in place of codec_long_name in a utility function
+            # Write more utility functions to extract metadata
+            # have a place to put H264_422_LongGOP
+            # use the panasonic XML frame rate
+            # Find out if it's interlaced or progressive
+            # Record timecode if available
+            # Use the Panasonic CINELIKE_D and BT.709 values
+            # iphone-14-pro-max-hevc-4k-dolby-vision-59.99fps-vertical.MOV
+            # iphone-14-pro-max-hevc-4k-sdr-29.99fps-vertical.MOV
+            # iphone-14-pro-max-hevc-1080p-dolby-vision-59.89fps-landscape.MOV
+            # iphone-14-pro-max-pro-res-1080p-hdr-29.98fps-landscape.MOV
+
             if audio_stream:
                 metadata.update(
                     {
                         "sample_rate": int(audio_stream.get("sample_rate", None)),
                         "channels": str(audio_stream.get("channels", None)),
-                        "codec": audio_stream.get("codec_name", None),
-                        "codec_long": audio_stream.get("codec_long_name", None),
+                        "codec": audio_stream.get("codec_long_name", None),
                         "bit_depth": audio_stream.get("bits_per_sample", None),
                     }
                 )
@@ -132,8 +143,7 @@ class AudioProcessor:
                 height = video_stream.get("height")
                 metadata.update(
                     {
-                        "video_codec": video_stream.get("codec_name", None),
-                        "video_codec_long": video_stream.get("codec_long_name", None),
+                        "video_codec": video_stream.get("codec_long_name", None),
                         "resolution": f"{width}x{height}" if width and height else None,
                         "frame_rate": get_frame_rate(video_stream),
                         "video_bitrate": video_stream.get("bit_rate", None),

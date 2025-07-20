@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
 """
 Audible Tools - Audio Processing and Transcription Tool
 Command line interface for audio file processing, transcription, and search.
 """
+
 import click
 from dotenv import load_dotenv
 from lib.audio_tools_cli import AudioToolsCLI
